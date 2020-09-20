@@ -7,56 +7,33 @@
 #include <algorithm>
 
 #include "SDL.h"
-#include "SDL_image.h"
 
 #include "Vectors.h"
+#include "Renderer.h"
+#include "Texture.h"
+#include "TextureLoader.h"
 
 using namespace std;
 
-struct Pixel
-{
-    Uint8 R, G, B, A;
-};
-
-const int frameWidth = 960; // 240;
-const int frameHeight = 600;
+const int frameWidth = 640; // 240;
+const int frameHeight = 400;
 Pixel framebuffer[frameWidth * frameHeight];
 
-const int windowWidth = 960;
-const int windowHeight = 600;
+const int windowWidth = 1280;
+const int windowHeight = 800;
 
-SDL_Surface* wallTexture;
-
-// OPTIMIZATION NOTE: This is the hottest code, called thousands of times per frame.
-// Needs to be as fast as possible (clearly still room for improvement)
-void sample_texture(SDL_Surface* texture, float u, float v, Pixel& result)
-{
-    int tex_x = (u * texture->w);
-    int tex_y = (1 - v) * texture->h; // TODO: optimize away this (1 - v) calc
-
-    // This is a convoluted, but fast, way to make the UV repeat in both directions.
-    // Only works if texture size is power of 2!
-    tex_x = (tex_x + 0x1000) & (texture->w - 1);
-    tex_y = (tex_y + 0x1000) & (texture->h - 1);
-
-    // TODO: optimize this PLS
-    // Texture data should be pre-processed into the same format as the framebuffer
-    // so we can do a fast, direct lookup instead of this f-ing mess
-    auto* linePtr = ((Uint8*)texture->pixels + tex_y * texture->pitch);
-    auto pixel = *((Uint32*)(linePtr + wallTexture->format->BytesPerPixel * tex_x));
-    SDL_GetRGBA(pixel, wallTexture->format, &result.R, &result.G, &result.B, &result.A);
-}
+Texture* wallTexture;
 
 struct Wall
 {
     Vec2 A, B;
     float MinHeight, MaxHeight;
-    SDL_Surface* Texture;
+    Texture* Texture;
 
     // TODO: This will break if A or B changes. Review interface to mark it as dirty when that happens.
     float Length;
 
-    Wall(Vec2 a, Vec2 b, float minHeight, float maxHeight, SDL_Surface* texture)
+    Wall(Vec2 a, Vec2 b, float minHeight, float maxHeight, ::Texture* texture)
         : A(a), B(b), Texture(texture), MinHeight(minHeight), MaxHeight(maxHeight)
     { 
         Length = (A - B).Length();
@@ -76,27 +53,6 @@ float cameraAngle = 0;
 float cameraFovH = 60 * PI / 180; // 60 deg
 
 // "Inspired" by some StackOverflow code.
-bool wall_intersect(Vec2 origin, Vec2 direction, const Wall& wall, float& outPosition)
-{
-    Vec2 q = wall.A;
-    Vec2 s = (wall.B - wall.A);
-    Vec2 p = origin;
-    Vec2 r = direction;
-
-    float num = Vec2::Cross(q - p, r);
-    float denom = Vec2::Cross(r, s);
-
-    if (denom == 0) return false;
-    float result = num / denom;
-    if (result > 0 && result < 1)
-    {
-        outPosition = result;
-        return true;
-    }
-
-    return false;
-}
-
 bool wall_intersect_from_origin(Vec2 direction, const Wall& wall, float& outPosition)
 {
     Vec2 q = wall.A;
@@ -186,7 +142,8 @@ void trace_column(int column, const Vec2& traceDir, float cameraHeight, float ca
             // calculate texture V coordinate
             v = InverseLerp(miny, maxy, y);
 
-            sample_texture(transformedWall.Texture, u, v, color); // *frameBufferPtr);
+            transformedWall.Texture->Sample(u, v, color);
+            //sample_texture(transformedWall.Texture, u, v, color); // *frameBufferPtr);
 
             // Not using this for now. Bugged for some reason.
             //frameBufferPtr -= frameWidth;
@@ -229,80 +186,6 @@ void draw_walls(const Vec2& cameraPos, const Vec2& cameraDirection, float camera
     }
 }
 
-// Draws a single wall to the screen directly. Not used anymore, left in as reference code.
-void trace_wall(const Wall& wall, const Vec2& cameraPos, const Vec2& cameraDirection, float cameraHeight, float cameraFovH)
-{
-    const float nearDist = 1;
-    const float halfFov = cameraFovH / 2;
-    const float nearWidth = 2 * nearDist * tan(halfFov);
-    const float xStep = nearWidth / frameWidth;
-
-    const float screenAspect = float(frameWidth) / frameHeight;
-    float cameraFovV = 2 * atan(tan(cameraFovH / 2) / screenAspect);
-    float halfFovV = cameraFovV / 2;
-
-    Wall transformedWall = wall;
-    transformedWall.A -= cameraPos;
-    transformedWall.B -= cameraPos;
-    transformedWall.A = transform_point(transformedWall.A, cameraDirection);
-    transformedWall.B = transform_point(transformedWall.B, cameraDirection);
-
-    Vec2 zero(0, 0);
-    for (int x = 0; x < frameWidth; x++)
-    {
-        Vec2 nearPoint(x * xStep - nearWidth / 2, nearDist);
-        Vec2 traceDir = nearPoint;
-
-        float wallPosition;
-        if (wall_intersect(zero, traceDir, transformedWall, wallPosition))
-        {
-            // get intersection point in 2D
-            Vec2 hitPoint = Lerp(transformedWall.A, transformedWall.B, wallPosition);
-            float hitDistance = hitPoint.Y; // Length();
-
-            // figure out min and max screen positions
-            float halfHeight = hitDistance * tan(halfFovV);
-            float wallMaxNormalized = 0.5f + (transformedWall.MaxHeight - cameraHeight) / halfHeight;
-            float wallMinNormalized = 0.5f - (cameraHeight - transformedWall.MinHeight) / halfHeight;
-
-            int miny = round(wallMinNormalized * frameHeight);
-            int maxy = round(wallMaxNormalized * frameHeight);
-
-            // trace wall column
-            float u = wallPosition;
-            int traceMinY = fmax(0, miny);
-            int traceMaxY = fmin(frameHeight, maxy);
-            for (int y = traceMinY; y < traceMaxY; y++)
-            {
-                if (y < 0 || y >= frameHeight) continue;
-
-                // calculate texture V coordinate
-                float v = InverseLerp(miny, maxy, y);
-
-                // flip y horizontally, since the screen is drawn top to bottom and we're counting bottom to top
-                Pixel& color = framebuffer[(frameHeight - y - 1) * frameWidth + x];
-                sample_texture(transformedWall.Texture, u, v, color);
-            }
-        }
-    }
-}
-
-void draw_texture_rotated(SDL_Surface* texture, const Vec2& origin, const Vec2& axis1, const Vec2& axis2, const int& x, const int& y)
-{
-    Vec2 point(x, y);
-    point.X /= frameWidth;
-    point.Y /= frameHeight;
-
-    Vec2 originToPoint = point - origin;
-    float u = Vec2::Dot(originToPoint, axis1) / axis1.SqrLength(); // originToPoint.Length()
-    float v = Vec2::Dot(originToPoint, axis2) / axis2.SqrLength();
-
-    if (u < 0 || v < 0 || u > 1 || v > 1) return;
-
-    Pixel& color = framebuffer[y * frameWidth + x];
-    sample_texture(texture, u, v, color);
-}
-
 void clear()
 {
     memset(framebuffer, 0, sizeof(framebuffer));
@@ -335,10 +218,12 @@ int main(int argc, char** argv)
         frameWidth, frameHeight);
 
     // load images
-    IMG_Init(IMG_INIT_PNG);
-    wallTexture = IMG_Load("Assets/wall_64.png");
+    //IMG_Init(IMG_INIT_PNG);
+    //wallTexture = IMG_Load("Assets/wall_64.png");
+    auto* textureLoader = new TextureLoader();
+    wallTexture = textureLoader->LoadFromFile("Assets/wall_128.png");
 
-    printf("Read %d x %d pixels bpp %d pitch %d\n", wallTexture->w, wallTexture->h, wallTexture->format->BytesPerPixel, wallTexture->pitch);
+    //printf("Read %d x %d pixels bpp %d pitch %d\n", wallTexture->w, wallTexture->h, wallTexture->format->BytesPerPixel, wallTexture->pitch);
 
     // Init map
     mapWalls.push_back(Wall(Vec2(-3, 1), Vec2(-1, 3), 0, 0.7f, wallTexture));
