@@ -15,12 +15,12 @@
 
 using namespace std;
 
-const int frameWidth = 640; // 240;
-const int frameHeight = 400;
+const int frameWidth = 320 * 2; // 240;
+const int frameHeight = 200 * 2;
 Pixel framebuffer[frameWidth * frameHeight];
 
-const int windowWidth = 1280;
-const int windowHeight = 800;
+const int windowWidth = 320 * 3;
+const int windowHeight = 200 * 3;
 
 Texture* wallTexture;
 
@@ -104,6 +104,9 @@ void trace_column(int column, const Vec2& traceDir, float cameraHeight, float ca
 
     //printf("Drawing %d walls for column %d\n", orderedWalls.size(), column);
 
+    char wasPainted[frameHeight];
+    memset(wasPainted, 0, sizeof(wasPainted));
+
     // draw walls front-to-back
     for (auto& wallAndHitDist : orderedWalls)
     {
@@ -128,24 +131,25 @@ void trace_column(int column, const Vec2& traceDir, float cameraHeight, float ca
         float v = InverseLerp(miny, maxy, traceMaxY);
         float vGrad = 1.0f / (maxy - miny);
         
-        // NOTE: "up" in the world is actually further into the framebuffer, so we iterate from the top to the bottom,
-        // to keep the framebuffer and texture iteration in memory order. This seems to me slightly better for performance.
+        // NOTE: "down" in the world is actually further into the framebuffer, so we iterate from the top to the bottom,
+        // to keep the framebuffer and texture iteration in memory order. This seems to be slightly better for performance.
         for (int y = traceMaxY - 1; y >= traceMinY; y--)
         {
+            // ignore already drawn pixels
+            if (wasPainted[y]) continue;
+            wasPainted[y] = 1;
+
             // flip y horizontally, since the screen is drawn top to bottom and we're counting bottom to top
             Pixel& color = framebuffer[(frameHeight - y - 1) * frameWidth + column];
             //Pixel& color = *frameBufferPtr;
             
-            // ignore already drawn pixels
-            if (color.A != 0) continue;
-
             // calculate texture V coordinate
             v = InverseLerp(miny, maxy, y);
 
+            //color.R = 255;
             transformedWall.Texture->Sample(u, v, color);
-            //sample_texture(transformedWall.Texture, u, v, color); // *frameBufferPtr);
-
-            // Not using this for now. Bugged for some reason.
+            
+            // Not using these for now. Bugged for some reason.
             //frameBufferPtr -= frameWidth;
             //v -= vGrad;
         }
@@ -239,6 +243,11 @@ int main(int argc, char** argv)
     
     bool quit = false;
     unsigned int lastTime = SDL_GetTicks(), currentTime;
+
+    // FPS check
+    int frameCount = 0;
+    float timeSum = 0;
+
     while (!quit)
     {
         // update timers
@@ -246,7 +255,17 @@ int main(int argc, char** argv)
         float deltaTime = 0.001f * (currentTime - lastTime);
         lastTime = currentTime;
 
-        printf("%8.3f FPS\n", 1/deltaTime);
+        // Update FPS
+        frameCount++;
+        timeSum += deltaTime;
+        if (timeSum > 0.5f)
+        {
+            float fps = frameCount / timeSum;
+            printf("%8.3f FPS\n", fps);
+
+            frameCount = 0;
+            timeSum = 0;
+        }
 
         SDL_PumpEvents();
         SDL_Event event;
