@@ -1,5 +1,3 @@
-// TinnusDoom.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
 
 #include <iostream>
 #include <cstdio>
@@ -29,21 +27,21 @@ const int windowHeight = 600;
 
 SDL_Surface* wallTexture;
 
+// OPTIMIZATION NOTE: This is the hottest code, called thousands of times per frame.
+// Needs to be as fast as possible (clearly still room for improvement)
 void sample_texture(SDL_Surface* texture, float u, float v, Pixel& result)
 {
-    //result.R = result.A = 255;
-    //result.G = result.B = 0;
-    //return;
-
-    // This is a convoluted
     int tex_x = (u * texture->w);
-    int tex_y = (1 - v) * texture->h;
+    int tex_y = (1 - v) * texture->h; // TODO: optimize away this (1 - v) calc
 
-    // This is a convoluted, but fast, way to make the UV repeat.
+    // This is a convoluted, but fast, way to make the UV repeat in both directions.
+    // Only works if texture size is power of 2!
     tex_x = (tex_x + 0x1000) & (texture->w - 1);
     tex_y = (tex_y + 0x1000) & (texture->h - 1);
 
-    // TODO: optimize this
+    // TODO: optimize this PLS
+    // Texture data should be pre-processed into the same format as the framebuffer
+    // so we can do a fast, direct lookup instead of this f-ing mess
     auto* linePtr = ((Uint8*)texture->pixels + tex_y * texture->pitch);
     auto pixel = *((Uint32*)(linePtr + wallTexture->format->BytesPerPixel * tex_x));
     SDL_GetRGBA(pixel, wallTexture->format, &result.R, &result.G, &result.B, &result.A);
@@ -54,10 +52,9 @@ struct Wall
     Vec2 A, B;
     float MinHeight, MaxHeight;
     SDL_Surface* Texture;
-    float Length;
 
-    //Wall() 
-    //: Texture(nullptr), MinHeight(0), MaxHeight(0) {}
+    // TODO: This will break if A or B changes. Review interface to mark it as dirty when that happens.
+    float Length;
 
     Wall(Vec2 a, Vec2 b, float minHeight, float maxHeight, SDL_Surface* texture)
         : A(a), B(b), Texture(texture), MinHeight(minHeight), MaxHeight(maxHeight)
@@ -66,7 +63,6 @@ struct Wall
     }
 };
 
-//Wall wall1;
 vector<Wall> mapWalls;
 vector<Wall> transformedWalls;
 
@@ -77,8 +73,9 @@ float cameraHeight = 0.6f; // 1.6f;
 float cameraAngle = 0;
 
 #define PI 3.14159f
-float cameraFovH = 60 * PI / 180; // 90 deg
+float cameraFovH = 60 * PI / 180; // 60 deg
 
+// "Inspired" by some StackOverflow code.
 bool wall_intersect(Vec2 origin, Vec2 direction, const Wall& wall, float& outPosition)
 {
     Vec2 q = wall.A;
@@ -210,7 +207,7 @@ void draw_walls(const Vec2& cameraPos, const Vec2& cameraDirection, float camera
     float halfFovV = cameraFovV / 2;
     float tanHalfFov = tan(halfFov);
 
-    // transform walls
+    // transform walls to view space
     transformedWalls.clear();
     for (auto& wall : mapWalls)
     {
@@ -232,6 +229,7 @@ void draw_walls(const Vec2& cameraPos, const Vec2& cameraDirection, float camera
     }
 }
 
+// Draws a single wall to the screen directly. Not used anymore, left in as reference code.
 void trace_wall(const Wall& wall, const Vec2& cameraPos, const Vec2& cameraDirection, float cameraHeight, float cameraFovH)
 {
     const float nearDist = 1;
@@ -313,28 +311,6 @@ void clear()
 void draw()
 {
     draw_walls(cameraPos, cameraDirection, cameraHeight, cameraFovH);
-
-    /*Vec2 wall_00(0.2f, 0.3f);
-    Vec2 wall_01(0.3f, 0.9f);
-    Vec2 wall_10(0.8f, 0.2f);
-
-    Vec2 origin = wall_00;
-    Vec2 axis1 = wall_10 - wall_00;
-    Vec2 axis2 = wall_01 - wall_00;*/
-
-    /*for(auto& wall : mapWalls)
-    {
-        trace_wall(wall, cameraPos, cameraDirection, cameraHeight, cameraFovH);
-    }*/
-
-    /*for (int y = 0; y < frameHeight; y++)
-    {
-        for (int x = 0; x < frameWidth; x++)
-        {
-            //draw_texture_rotated(wallTexture, origin, axis1, axis2, x, y);
-            trace_wall(wall1, cameraPos, cameraDirection, cameraHeight, cameraFovH);
-        }
-    }*/
 }
 
 void increment_camera_angle(float delta)
@@ -346,8 +322,6 @@ void increment_camera_angle(float delta)
 
 int main(int argc, char** argv)
 {
-    std::cout << "Hello World!\n";
-
     SDL_Window* sdlWindow = SDL_CreateWindow("TinnusDoom",
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
@@ -365,11 +339,6 @@ int main(int argc, char** argv)
     wallTexture = IMG_Load("Assets/wall_64.png");
 
     printf("Read %d x %d pixels bpp %d pitch %d\n", wallTexture->w, wallTexture->h, wallTexture->format->BytesPerPixel, wallTexture->pitch);
-
-    /*Vec2 test;
-    test.X = Fixed::FromFloat(1.23f);
-    test.Y = Fixed::FromFloat(31995.005f);
-    printf("Fixed point test: %.5f / %.5f internal: %d / %d\n", test.X.ToFloat(), test.Y.ToFloat(), test.X.Value, test.Y.Value);*/
 
     // Init map
     mapWalls.push_back(Wall(Vec2(-3, 1), Vec2(-1, 3), 0, 0.7f, wallTexture));
@@ -403,6 +372,8 @@ int main(int argc, char** argv)
             case SDL_QUIT:
                 quit = true;
                 break;
+
+            // TODO: Organize input code a little better or at least hide it somewhere else.
             case SDL_KEYDOWN:
                 if (event.key.repeat) continue;
 
@@ -478,9 +449,12 @@ int main(int argc, char** argv)
         clear();
         draw();
 
+        // This is not needed since we're copying the whole framebuffer over every frame anyway.
         //SDL_SetRenderDrawColor(sdlRenderer, 100, 50, 20, 255);
         //SDL_RenderClear(sdlRenderer);
 
+        // TODO: These 3 calls may be done in a separate thread, to improve performance, while next frame is being calculated in the CPU.
+        // Will require double buffering the framebuffer to avoid trashing it while it's being copied to the screen.
         SDL_UpdateTexture(sdlTexture, nullptr, framebuffer, frameWidth * sizeof(Uint32));
         SDL_RenderCopy(sdlRenderer, sdlTexture, NULL, NULL);
 
